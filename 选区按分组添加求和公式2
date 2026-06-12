@@ -1,0 +1,102 @@
+' 按分组层级添加求和公式，逐列独立求和 + 跳过百分比列 + 修复下标越界
+Sub 选区按分组添加求和公式(sel As Range)
+    Dim i As Long, j As Long, k As Long
+    Dim selRStart As Long, selCStart As Long
+    Dim selREnd As Long, selCEnd As Long
+    Dim arrLv() As Long
+    Dim rngCollect As Range
+    Dim curLv As Long, minSubLv As Long
+    Dim hasDirectChild As Boolean
+    Dim sumAddr As String
+    
+    ' 入参校验
+    If sel Is Nothing Then Exit Sub
+    
+    ' 关闭刷新、自动计算提速
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    
+    selRStart = sel.Row
+    selCStart = sel.Column
+    selREnd = sel.Row + sel.Rows.Count - 1
+    selCEnd = sel.Column + sel.Columns.Count - 1
+    
+    ' 预存所有行分组层级
+    ReDim arrLv(selRStart To selREnd)
+    For i = selRStart To selREnd
+        arrLv(i) = Rows(i).OutlineLevel
+    Next i
+    
+    ' 逐行处理汇总行
+    For j = selRStart To selREnd
+        curLv = arrLv(j)
+        
+        ' ========== 逐列循环：每一列单独收集同列下级区域 ==========
+        For k = selCStart To selCEnd
+            ' 跳过百分比格式列
+            If IsPercentFormat(Cells(j, k)) Then GoTo NextCol
+            
+            hasDirectChild = False
+            Set rngCollect = Nothing
+            
+            ' 1. 查找当前列 直属下级(Lv+1)
+            For i = j + 1 To selREnd
+                If arrLv(i) <= curLv Then Exit For
+                If arrLv(i) = curLv + 1 Then
+                    If rngCollect Is Nothing Then
+                        Set rngCollect = Cells(i, k)
+                    Else
+                        Set rngCollect = Union(rngCollect, Cells(i, k))
+                    End If
+                End If
+            Next i
+            
+            ' 2. 无直属下级，查找本组最小子层级
+            If Not hasDirectChild Then
+                ' 先判断边界，防止下标越界
+                If j + 1 > selREnd Then GoTo WriteFormula
+                If arrLv(j + 1) <= curLv Then GoTo WriteFormula
+                
+                minSubLv = 9999
+                For i = j + 1 To selREnd
+                    If arrLv(i) <= curLv Then Exit For
+                    If arrLv(i) > curLv And arrLv(i) < minSubLv Then
+                        minSubLv = arrLv(i)
+                    End If
+                Next i
+                
+                ' 收集当前列最小层级单元格
+                For i = j + 1 To selREnd
+                    If arrLv(i) <= curLv Then Exit For
+                    If arrLv(i) = minSubLv Then
+                        If rngCollect Is Nothing Then
+                            Set rngCollect = Cells(i, k)
+                        Else
+                            Set rngCollect = Union(rngCollect, Cells(i, k))
+                        End If
+                    End If
+                Next i
+            End If
+            
+WriteFormula:
+            ' 写入当前列求和公式
+            If Not rngCollect Is Nothing Then
+                sumAddr = rngCollect.Address(0, 0)
+                Cells(j, k).Formula = "=SUM(" & sumAddr & ")"
+                Cells(j, k).Interior.ColorIndex = 8
+            End If
+            
+NextCol:
+        Next k
+    Next j
+    
+    ' 恢复设置
+    Set rngCollect = Nothing
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+End Sub
+
+' 辅助函数：判断单元格是否为百分比格式
+Private Function IsPercentFormat(rng As Range) As Boolean
+    IsPercentFormat = InStr(1, rng.NumberFormat, "%", vbTextCompare) > 0
+End Function
