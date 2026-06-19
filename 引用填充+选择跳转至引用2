@@ -1,0 +1,157 @@
+Option Explicit
+rem 豆包修改
+'常量定义
+Const COLOR_MOD As Integer = 56    '色标循环最大值
+Const SPLIT_CHAR As String = "/"    '地址分隔符
+
+'【主功能1】选中单元格公式引用区域自动填充对应区分颜色
+Sub 公式引用填充对应颜色()
+    Dim srcSel As Range, cell As Range, usedRng As Range
+    Dim formulaTxt As String, addrArr As Variant, singleAddr As String
+    Dim colorIdx As Integer, i As Long, addrList As String
+    Dim shtName As String, cellAddr As String
+    
+    '性能开关
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    
+    On Error GoTo ErrHandler
+    Set srcSel = Selection
+    '仅取选中区域与已使用区域交集，缩小计算范围
+    Set usedRng = Intersect(srcSel, srcSel.Parent.UsedRange)
+    If usedRng Is Nothing Then GoTo RestoreSetting
+    
+    '清空原有填充底色
+    usedRng.Interior.Pattern = xlNone
+    colorIdx = 2 '起始色号
+    
+    For Each cell In usedRng
+        '仅处理带公式单元格
+        If cell.HasFormula Then
+            formulaTxt = cell.Formula
+            addrList = GetAllFormulaAddr(formulaTxt) '提取所有引用地址
+            cell.Interior.ColorIndex = colorIdx
+            
+            '拆分地址数组遍历上色
+            addrArr = Split(addrList, SPLIT_CHAR)
+            For i = LBound(addrArr) To UBound(addrArr)
+                singleAddr = Trim(addrArr(i))
+                If Len(singleAddr) = 0 Then GoTo NextAddr
+                
+                '区分跨工作表地址（含!） / 当前表地址
+                If InStr(1, singleAddr, "!", vbTextCompare) > 0 Then
+                    shtName = Split(singleAddr, "!")(0)
+                    cellAddr = Split(singleAddr, "!")(1)
+                    '去除工作表名包裹的单引号
+                    shtName = Replace(shtName, "'", "")
+                    
+                    '校验工作表是否存在，不存在跳过防报错
+                    If WorksheetExists(shtName) Then
+                        Sheets(shtName).Range(cellAddr).Interior.ColorIndex = colorIdx
+                    End If
+                Else
+                    '当前工作表单元格
+                    cell.Range(singleAddr).Interior.ColorIndex = colorIdx
+                End If
+NextAddr:
+            Next i
+        End If
+        
+        '色号循环
+        colorIdx = colorIdx + 1
+        If colorIdx > COLOR_MOD Then colorIdx = 2
+    Next cell
+
+RestoreSetting:
+    '恢复Excel系统设置
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Set srcSel = Nothing
+    Set usedRng = Nothing
+    Exit Sub
+
+ErrHandler:
+    MsgBox "上色出错：" & Err.Description & " 单元格：" & cell.Address, vbExclamation
+    Resume RestoreSetting
+End Sub
+
+'【主功能2】选中公式单元格，一键跳转到第一个引用单元格
+Sub 选择跳转至引用()
+    Dim activeCell As Range, formulaTxt As String
+    Dim allAddr As String, firstAddr As String
+    Dim shtName As String, cellAddr As String
+    
+    On Error GoTo ErrJump
+    Set activeCell = ActiveCell
+    If Not activeCell.HasFormula Then
+        MsgBox "当前单元格无公式，无法跳转！", vbInformation
+        Exit Sub
+    End If
+    
+    formulaTxt = activeCell.Formula
+    allAddr = GetAllFormulaAddr(formulaTxt)
+    If Len(allAddr) = 0 Then
+        MsgBox "公式未识别到单元格引用！", vbInformation
+        Exit Sub
+    End If
+    
+    '取第一个引用地址跳转
+    firstAddr = Split(allAddr, SPLIT_CHAR)(0)
+    
+    If InStr(1, firstAddr, "!", vbTextCompare) > 0 Then
+        shtName = Replace(Split(firstAddr, "!")(0), "'", "")
+        cellAddr = Split(firstAddr, "!")(1)
+        If WorksheetExists(shtName) Then
+            Application.Goto Reference:=Sheets(shtName).Range(cellAddr), Scroll:=True
+        End If
+    Else
+        Application.Goto Reference:=activeCell.Range(firstAddr), Scroll:=True
+    End If
+    Exit Sub
+    
+ErrJump:
+    MsgBox "跳转失败：" & Err.Description, vbCritical
+End Sub
+
+'【公共函数1】正则提取公式内全部单元格引用地址，用/拼接返回
+Function GetAllFormulaAddr(formulaStr As String) As String
+    Dim reg As Object, matchColl As Object
+    Dim singleMatch As Object, outStr As String
+    
+    Set reg = CreateObject("VBScript.RegExp")
+    With reg
+        .Global = True
+        .IgnoreCase = True
+        '兼容中文表名、带单引号表名、普通区域、$绝对引用
+        .Pattern = "((([一-龥a-zA-Z]+[0-9]+!)|(('((?!\!).)*!)?)|([一-龥a-zA-Z][\u4E00-\u9FA5A-Za-z0-9_\.]+[^']!{1}))\$?[a-zA-Z]+\$?[0-9]+)((:((([一-龥a-zA-Z]+[0-9]+!)|(('((?!\!).)*!)?)|([一-龥a-zA-Z][\u4E00-\u9FA5A-Za-z0-9_\.]+[^']!{1}))\$?[a-zA-Z]+\$?[0-9]+))?)"
+    End With
+    
+    Set matchColl = reg.Execute(formulaStr)
+    outStr = ""
+    For Each singleMatch In matchColl
+        outStr = outStr & SPLIT_CHAR & singleMatch.Value
+    Next singleMatch
+    
+    '去除开头分隔符
+    If Len(outStr) > 0 Then
+        GetAllFormulaAddr = Mid(outStr, 2)
+    Else
+        GetAllFormulaAddr = ""
+    End If
+    
+    Set reg = Nothing
+    Set matchColl = Nothing
+    Set singleMatch = Nothing
+End Function
+
+'【公共函数2】校验工作表是否存在，返回布尔值
+Function WorksheetExists(shtName As String) As Boolean
+    Dim sht As Worksheet
+    On Error Resume Next
+    Set sht = ThisWorkbook.Worksheets(shtName)
+    On Error GoTo 0
+    WorksheetExists = Not sht Is Nothing
+    Set sht = Nothing
+End Function
